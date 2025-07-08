@@ -106,9 +106,8 @@ type DeleteEntityResponse struct {
 	Error string `json:"error"`
 }
 
-type GetUserDetailsResponse struct {
-	Entity uuid.UUID `json:"entity"`
-	User   *Entity   `json:"user"`
+type GetEntityDetailsResponse struct {
+	Entity *Entity `json:"user"`
 
 	Valid bool   `json:"valid"`
 	Error string `json:"error"`

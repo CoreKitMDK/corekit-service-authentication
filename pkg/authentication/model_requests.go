@@ -112,6 +112,6 @@ type DeleteEntityRequest struct {
 	DeviceFingerprint *string `json:"device_fingerprint,omitempty"`
 }
 
-type GetUserDetailsRequest struct {
+type GetEntityDetailsRequest struct {
 	Entity uuid.UUID `json:"entity"`
 }
