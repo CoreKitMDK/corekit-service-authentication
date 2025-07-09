@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS entity_login_methods (
-    id UUID PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     entity_id UUID NOT NULL REFERENCES entities(id),
     method_id UUID NOT NULL,
@@ -10,5 +10,3 @@ CREATE TABLE IF NOT EXISTS entity_login_methods (
     created_at BIGINT NOT NULL DEFAULT current_epoch(),
     deleted_at BIGINT
 );
-
-CREATE INDEX IF NOT EXISTS idx_entity_login_methods_entity_id ON entity_login_methods(entity_id);

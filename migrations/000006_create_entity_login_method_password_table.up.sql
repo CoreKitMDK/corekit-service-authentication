@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS entity_login_method_password (
-    id UUID PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     identifier VARCHAR(255) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,

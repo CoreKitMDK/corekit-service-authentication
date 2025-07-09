@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS entities (
-    id UUID PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     primary_email VARCHAR(255) UNIQUE NOT NULL,
     primary_phone VARCHAR(255),
@@ -15,5 +15,3 @@ CREATE TABLE IF NOT EXISTS entities (
     deleted_at BIGINT
 );
 
--- Create an index on the email for faster lookups
-CREATE INDEX IF NOT EXISTS idx_entities_email ON entities(email);

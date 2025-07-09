@@ -3,8 +3,8 @@ package authentication
 import "github.com/google/uuid"
 
 type LoginPasswordRequest struct {
-	Identifier   string `json:"identifier"`
-	PasswordHash string `json:"password_hash"`
+	Identifier string `json:"identifier"`
+	Password   string `json:"password"`
 
 	IPAddress         *string `json:"ip_address,omitempty"`
 	UserAgent         *string `json:"user_agent,omitempty"`
@@ -21,7 +21,6 @@ type LoginRefreshTokenRequest struct {
 }
 
 type RegisterPasswordRequest struct {
-	Identifier       string  `json:"identifier"`
 	Password         string  `json:"password"`
 	PrimaryEmail     string  `json:"primary_email"`
 	PublicIdentifier string  `json:"public_identifier"`

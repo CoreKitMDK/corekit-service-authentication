@@ -22,6 +22,7 @@ type EntityToken struct {
 	EntityID          uuid.UUID `json:"entity_id"`
 	RefreshTokenID    uuid.UUID `json:"refresh_token_id"`
 	Token             string    `json:"token"`
+	TokenRandomID     string    `json:"token_random_id"`
 	IPAddress         *string   `json:"ip_address,omitempty"`
 	UserAgent         *string   `json:"user_agent,omitempty"`
 	DeviceFingerprint *string   `json:"device_fingerprint,omitempty"`
@@ -37,6 +38,7 @@ type EntityRefreshToken struct {
 	ID                uuid.UUID `json:"id"`
 	EntityID          uuid.UUID `json:"entity_id"`
 	Token             string    `json:"token"`
+	TokenRandomID     string    `json:"token_random_id"`
 	IPAddress         *string   `json:"ip_address,omitempty"`
 	UserAgent         *string   `json:"user_agent,omitempty"`
 	DeviceFingerprint *string   `json:"device_fingerprint,omitempty"`

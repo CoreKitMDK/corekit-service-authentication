@@ -4,18 +4,27 @@ import (
 	"context"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"time"
 )
 
 type DAL struct {
-	db *pgx.Conn
+	db              *pgx.Conn
+	tokenIssuer     string
+	tokenAudience   []string
+	tokenSigningKey string
 }
 
-func NewAuthenticationDAL(connString string) (*DAL, error) {
+func NewAuthenticationDAL(connString string, tokenIssuer string, tokenAudience []string, tokenSigningKey string) (*DAL, error) {
 	conn, err := pgx.Connect(context.Background(), connString)
 	if err != nil {
 		return nil, err
 	}
-	return &DAL{db: conn}, nil
+	return &DAL{
+		db:              conn,
+		tokenIssuer:     tokenIssuer,
+		tokenAudience:   tokenAudience,
+		tokenSigningKey: tokenSigningKey,
+	}, nil
 }
 
 func (dal *DAL) Close() {
@@ -25,28 +34,411 @@ func (dal *DAL) Close() {
 	}
 }
 
-func (dal *DAL) LoginPassword(req *LoginPasswordRequest) (*LoginPasswordResponse, error) {
-	return nil, nil
+func (dal *DAL) LoginPassword(ctx context.Context, req *LoginPasswordRequest) (*LoginPasswordResponse, error) {
+	query1 := `SELECT e.id FROM entity e JOIN entity_login_method_password elmp WHERE elmp.identifier = $1 AND elmp.password_hash = $2 AND e.active = true AND elmp.active = true;`
+
+	passwordHash, err := HashString(req.Password)
+	if err != nil {
+		return &LoginPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	rows, err := dal.db.Query(ctx, query1, req.Identifier, passwordHash)
+	if err != nil {
+		return &LoginPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+	defer rows.Close()
+
+	entityIDString := ""
+	for rows.Next() {
+		err := rows.Scan(&entityIDString)
+		if err != nil {
+			return &LoginPasswordResponse{Valid: false, Error: err.Error()}, err
+		}
+	}
+
+	entityID, err := uuid.Parse(entityIDString)
+	if err != nil {
+		return &LoginPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	tx, err := dal.db.Begin(ctx)
+	if err != nil {
+		return &LoginPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+	defer tx.Rollback(ctx)
+
+	randomRefreshTokenId, err := GetRandomAlphanumericString(32)
+	if err != nil {
+		return &LoginPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	refreshTokenExpiresAt := time.Now().UTC().Add(time.Hour * 24 * 30)
+	refreshToken, err := GenerateJWT(dal.tokenIssuer, entityID.String(), dal.tokenAudience, refreshTokenExpiresAt, time.Now().UTC(), time.Now().UTC(), randomRefreshTokenId, dal.tokenSigningKey)
+	if err != nil {
+		return &LoginPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	entityRefreshTokenIdString := ""
+	query2 := `INSERT INTO entity_refresh_tokens (entity_id, token, token_random_id, expires_at) VALUES ($1, $2, $3, $4);`
+	err = tx.QueryRow(ctx, query2, entityID, refreshToken, randomRefreshTokenId, refreshTokenExpiresAt.Unix()).Scan(&entityRefreshTokenIdString)
+	if err != nil {
+		return &LoginPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	randomTokenId, err := GetRandomAlphanumericString(32)
+	if err != nil {
+		return &LoginPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	tokenExpiresAt := time.Now().UTC().Add(time.Minute * 15)
+	token, err := GenerateJWT(dal.tokenIssuer, entityID.String(), dal.tokenAudience, refreshTokenExpiresAt, time.Now().UTC(), time.Now().UTC(), randomTokenId, dal.tokenSigningKey)
+	if err != nil {
+		return &LoginPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	query3 := `INSERT INTO entity_tokens (entity_id, token, token_random_id, refresh_token_id, expires_at) VALUES ($1, $2, $3, $4,  $5);`
+	_, err = tx.Exec(ctx, query3, entityID, token, randomTokenId, entityRefreshTokenIdString, tokenExpiresAt.Unix())
+
+	if err = tx.Commit(ctx); err != nil {
+		return &LoginPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	return &LoginPasswordResponse{
+		Entity:                entityID,
+		Token:                 token,
+		TokenExpiresAt:        tokenExpiresAt.Unix(),
+		RefreshToken:          refreshToken,
+		RefreshTokenExpiresAt: refreshTokenExpiresAt.Unix(),
+		Valid:                 true,
+		Error:                 "",
+	}, nil
 }
 
-func (dal *DAL) LoginRefreshToken(req *LoginRefreshTokenRequest) (*LoginRefreshTokenResponse, error) {
-	return nil, nil
+func (dal *DAL) LoginRefreshToken(ctx context.Context, req *LoginRefreshTokenRequest) (*LoginRefreshTokenResponse, error) {
+	query1 := `SELECT id, token, token_random_id FROM entity_refresh_tokens WHERE entity_id = $1 AND refresh_token = $2 AND active = true AND expires_at > current_epoch();`
+	rows, err := dal.db.Query(ctx, query1, req.Entity)
+	if err != nil {
+		return &LoginRefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+	defer rows.Close()
+
+	refreshTokenIdString := ""
+	refreTokenRandomId := ""
+	refreshTokenString := ""
+	for rows.Next() {
+		err := rows.Scan(&refreshTokenIdString, &refreshTokenString, &refreTokenRandomId)
+		if err != nil {
+			return &LoginRefreshTokenResponse{Valid: false, Error: err.Error()}, err
+		}
+	}
+
+	randomTokenId, err := GetRandomAlphanumericString(32)
+	if err != nil {
+		return &LoginRefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	refreshTokenId, err := uuid.Parse(refreshTokenIdString)
+	if err != nil {
+		return &LoginRefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	tokenExpiresAt := time.Now().UTC().Add(time.Minute * 15)
+	token, err := GenerateJWT(dal.tokenIssuer, req.Entity.String(), dal.tokenAudience, tokenExpiresAt, time.Now().UTC(), time.Now().UTC(), randomTokenId, dal.tokenSigningKey)
+	if err != nil {
+		return &LoginRefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	tx, err := dal.db.Begin(ctx)
+	if err != nil {
+		return &LoginRefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+	defer tx.Rollback(ctx)
+
+	query2 := `INSERT INTO entity_tokens (entity_id, token, token_random_id, refresh_token_id, expires_at) VALUES ($1, $2, $3, $4,  $5);`
+	_, err = tx.Exec(ctx, query2, req.Entity, token, randomTokenId, refreshTokenId, tokenExpiresAt.Unix())
+
+	if err = tx.Commit(ctx); err != nil {
+		return &LoginRefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	return &LoginRefreshTokenResponse{
+		Entity:         req.Entity,
+		Token:          token,
+		TokenExpiresAt: tokenExpiresAt.Unix(),
+		Valid:          true,
+		Error:          "",
+	}, nil
 }
 
-func (dal *DAL) RegisterPassword(req *RegisterPasswordRequest) (*RegisterPasswordResponse, error) {
-	return nil, nil
+func (dal *DAL) RegisterPassword(ctx context.Context, req *RegisterPasswordRequest) (*RegisterPasswordResponse, error) {
+	query1 := `SELECT id FROM entities WHERE primary_email <> $1;`
+
+	rows, err := dal.db.Query(ctx, query1, req.PrimaryEmail)
+	if err != nil {
+		return &RegisterPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+	defer rows.Close()
+
+	var entityID uuid.UUID
+	for rows.Next() {
+		err := rows.Scan(&entityID)
+		if err != nil {
+			return &RegisterPasswordResponse{Valid: false, Error: err.Error()}, err
+		}
+	}
+
+	if entityID != uuid.Nil {
+		return &RegisterPasswordResponse{Valid: false, Error: "Existing email"}, nil
+	}
+
+	tx, err := dal.db.Begin(ctx)
+	if err != nil {
+		return &RegisterPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+	defer tx.Rollback(ctx)
+
+	insertedEntityID := ""
+	query2 := `INSERT INTO entities (primary_email, primary_phone, public_identifier) VALUES ($1, $2, $3) RETURNING id;`
+	err = tx.QueryRow(ctx, query2, req.PrimaryEmail, req.PrimaryPhone, req.PublicIdentifier).Scan(&insertedEntityID)
+	if err != nil {
+		return &RegisterPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	entityID, err = uuid.Parse(insertedEntityID)
+	if err != nil {
+		return &RegisterPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	passwordHash, err := HashString(req.Password)
+	if err != nil {
+		return &RegisterPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	EntityLoginMethodPasswordIdString := ""
+	query3 := `INSERT INTO entity_login_method_password (identifier, password_hash) VALUES ($1, $2) RETURNING id;`
+	err = tx.QueryRow(ctx, query3, req.PrimaryEmail, passwordHash).Scan(&EntityLoginMethodPasswordIdString)
+	if err != nil {
+		return &RegisterPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	EntityLoginMethodPasswordId, err := uuid.Parse(EntityLoginMethodPasswordIdString)
+	if err != nil {
+		return &RegisterPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	query4 := `INSERT INTO entity_login_methods (entity_id, method_id, method_type) VALUES ($1, $2, 'entity_login_method_password');`
+	_, err = tx.Exec(ctx, query4, entityID, EntityLoginMethodPasswordId)
+	if err != nil {
+		return &RegisterPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	randomRefreshTokenId, err := GetRandomAlphanumericString(32)
+	if err != nil {
+		return &RegisterPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	refreshTokenExpiresAt := time.Now().UTC().Add(time.Hour * 24 * 30)
+	refreshToken, err := GenerateJWT(dal.tokenIssuer, entityID.String(), dal.tokenAudience, refreshTokenExpiresAt, time.Now().UTC(), time.Now().UTC(), randomRefreshTokenId, dal.tokenSigningKey)
+	if err != nil {
+		return &RegisterPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	entityRefreshTokenIdString := ""
+	query5 := `INSERT INTO entity_refresh_tokens (entity_id, token, token_random_id, expires_at) VALUES ($1, $2, $3, $4) RETURNING id;`
+	err = tx.QueryRow(ctx, query5, entityID, refreshToken, randomRefreshTokenId, refreshTokenExpiresAt.Unix()).Scan(&entityRefreshTokenIdString)
+	if err != nil {
+		return &RegisterPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	randomTokenId, err := GetRandomAlphanumericString(32)
+	if err != nil {
+		return &RegisterPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	tokenExpiresAt := time.Now().UTC().Add(time.Minute * 15)
+	token, err := GenerateJWT(dal.tokenIssuer, entityID.String(), dal.tokenAudience, refreshTokenExpiresAt, time.Now().UTC(), time.Now().UTC(), randomTokenId, dal.tokenSigningKey)
+	if err != nil {
+		return &RegisterPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	query6 := `INSERT INTO entity_tokens (entity_id, token, token_random_id, refresh_token_id, expires_at) VALUES ($1, $2, $3, $4,  $5);`
+	_, err = tx.Exec(ctx, query6, entityID, token, randomTokenId, entityRefreshTokenIdString, tokenExpiresAt.Unix())
+
+	if err = tx.Commit(ctx); err != nil {
+		return &RegisterPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	return &RegisterPasswordResponse{
+		Entity:                entityID,
+		Token:                 token,
+		TokenExpiresAt:        tokenExpiresAt.Unix(),
+		RefreshToken:          refreshToken,
+		RefreshTokenExpiresAt: refreshTokenExpiresAt.Unix(),
+		Valid:                 true,
+		Error:                 "",
+	}, nil
 }
 
-func (dal *DAL) RefreshToken(req *RefreshTokenRequest) (*RefreshTokenResponse, error) {
-	return nil, nil
+func (dal *DAL) RefreshToken(ctx context.Context, req *RefreshTokenRequest) (*RefreshTokenResponse, error) {
+	query1 := `SELECT id, token, token_random_id FROM entity_refresh_tokens WHERE entity_id = $1 AND refresh_token = $2 AND active = true AND expires_at > current_epoch();`
+
+	rows, err := dal.db.Query(ctx, query1, req.Entity)
+	if err != nil {
+		return &RefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+	defer rows.Close()
+
+	refreshTokenId := ""
+	refreshToken := ""
+	randomRefreshTokenId := ""
+	for rows.Next() {
+		err := rows.Scan(&refreshTokenId, &refreshToken, &randomRefreshTokenId)
+		if err != nil {
+			return &RefreshTokenResponse{Valid: false, Error: err.Error()}, err
+		}
+	}
+
+	refreshTokenUUID, err := uuid.Parse(refreshTokenId)
+	if err != nil {
+		return &RefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	parsedRefreshToken, err := VerifyJWT(refreshToken, dal.tokenSigningKey)
+	if err != nil {
+		return &RefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	err = ValidateJWT(parsedRefreshToken)
+	if err != nil {
+		return &RefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	randomTokenId, err := GetRandomAlphanumericString(32)
+	if err != nil {
+		return &RefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	expiresAt := time.Now().UTC().Add(time.Minute * 15)
+	token, err := GenerateJWT(dal.tokenIssuer, req.Entity.String(), dal.tokenAudience, expiresAt, time.Now().UTC(), time.Now().UTC(), randomTokenId, dal.tokenSigningKey)
+	if err != nil {
+		return &RefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	tx, err := dal.db.Begin(ctx)
+	if err != nil {
+		return &RefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+	defer tx.Rollback(ctx)
+
+	query2 := `INSERT INTO entity_tokens (entity_id, token, token_random_id, refresh_token_id, expires_at) VALUES ($1, $2, $3, $4,  $5);`
+	_, err = tx.Exec(ctx, query2, req.Entity, token, randomTokenId, refreshTokenUUID, expiresAt.Unix())
+	if err != nil {
+		return &RefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return &RefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	return &RefreshTokenResponse{
+		Entity:         req.Entity,
+		Token:          token,
+		TokenExpiresAt: expiresAt.Unix(),
+		Valid:          false,
+		Error:          "",
+	}, nil
 }
 
-func (dal *DAL) LogoutToken(req *LogoutTokenRequest) (*LogoutTokenResponse, error) {
-	return nil, nil
+func (dal *DAL) LogoutToken(ctx context.Context, req *LogoutTokenRequest) (*LogoutTokenResponse, error) {
+	query1 := `SELECT id FROM entity_tokens WHERE entity_id = $1 AND refresh_token = $2 AND active = true;`
+
+	rows, err := dal.db.Query(ctx, query1, req.Entity)
+	if err != nil {
+		return &LogoutTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+	defer rows.Close()
+
+	logoutTokenResponse := &LogoutTokenResponse{Valid: true, Error: ""}
+	id := ""
+
+	for rows.Next() {
+		err := rows.Scan(&id)
+		if err != nil {
+			return &LogoutTokenResponse{Valid: false, Error: err.Error()}, err
+		}
+	}
+
+	tokenUUID, err := uuid.Parse(id)
+	if err != nil {
+		return &LogoutTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	tx, err := dal.db.Begin(ctx)
+	if err != nil {
+		return &LogoutTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+	defer tx.Rollback(ctx)
+
+	query2 := `UPDATE entity_tokens SET active = false, revoked_at = current_epoch() WHERE id = $1;`
+	_, err = tx.Exec(ctx, query2, tokenUUID)
+	if err != nil {
+		return &LogoutTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return &LogoutTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	logoutTokenResponse.Entity = req.Entity
+	logoutTokenResponse.Valid = true
+	logoutTokenResponse.Error = ""
+	return logoutTokenResponse, nil
 }
 
-func (dal *DAL) LogoutRefreshToken(req *LogoutRefreshTokenRequest) (*LogoutRefreshTokenResponse, error) {
-	return nil, nil
+func (dal *DAL) LogoutRefreshToken(ctx context.Context, req *LogoutRefreshTokenRequest) (*LogoutRefreshTokenResponse, error) {
+	query1 := `SELECT id FROM entity_refresh_tokens WHERE entity_id = $1 AND refresh_token = $2 AND active = true;`
+
+	rows, err := dal.db.Query(ctx, query1, req.Entity)
+	if err != nil {
+		return &LogoutRefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+	defer rows.Close()
+
+	logoutRefreshTokenResponse := &LogoutRefreshTokenResponse{Valid: true, Error: ""}
+	id := ""
+
+	for rows.Next() {
+		err := rows.Scan(&id)
+		if err != nil {
+			return &LogoutRefreshTokenResponse{Valid: false, Error: err.Error()}, err
+		}
+	}
+
+	refreshTokenUUID, err := uuid.Parse(id)
+	if err != nil {
+		return &LogoutRefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	tx, err := dal.db.Begin(ctx)
+	if err != nil {
+		return &LogoutRefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+	defer tx.Rollback(ctx)
+
+	query2 := `UPDATE entity_refresh_tokens SET active = false, revoked_at = current_epoch() WHERE id = $1;`
+	_, err = tx.Exec(ctx, query2, refreshTokenUUID)
+	if err != nil {
+		return &LogoutRefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return &LogoutRefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	logoutRefreshTokenResponse.Entity = req.Entity
+	logoutRefreshTokenResponse.Valid = true
+	logoutRefreshTokenResponse.Error = ""
+	return logoutRefreshTokenResponse, nil
 }
 
 func (dal *DAL) LogoutAll(ctx context.Context, req *LogoutAllRequest) (*LogoutAllResponse, error) {
@@ -159,7 +551,7 @@ func (dal *DAL) VerifyEntity(ctx context.Context, req *VerifyEntityRequest) (*Ve
 func (dal *DAL) ForgotPassword(ctx context.Context, req *ForgotPasswordRequest) (*ForgotPasswordResponse, error) {
 	query1 := `SELECT id FROM entity WHERE primary_email = $1;`
 
-	rows, err := dal.db.Query(context.Background(), query1, req.PrimaryEmail)
+	rows, err := dal.db.Query(ctx, query1, req.PrimaryEmail)
 	if err != nil {
 		return &ForgotPasswordResponse{Valid: false, Error: err.Error()}, err
 	}
@@ -213,7 +605,7 @@ func (dal *DAL) ChangePassword(ctx context.Context, req *ChangePasswordRequest) 
 	    WHERE e.active = true AND elm.active = true AND elmp.active = true and elm.method_type like 'entity_login_method_password'
 			AND e.primary_email = $1 elmp.password_reset_token = $2 AND elmp.password_reset_token_expires_at > current_epoch();`
 
-	rows, err := dal.db.Query(context.Background(), query1, req.PrimaryEmail, req.PasswordResetToken)
+	rows, err := dal.db.Query(ctx, query1, req.PrimaryEmail, req.PasswordResetToken)
 	if err != nil {
 		return &ChangePasswordResponse{Valid: false, Error: err.Error()}, err
 	}
@@ -300,11 +692,11 @@ func (dal *DAL) DeleteEntity(ctx context.Context, req DeleteEntityRequest) (*Del
 	return &DeleteEntityResponse{Valid: true, Error: ""}, nil
 }
 
-func (dal *DAL) GetEntityDetails(req *GetEntityDetailsRequest) (*GetEntityDetailsResponse, error) {
+func (dal *DAL) GetEntityDetails(ctx context.Context, req *GetEntityDetailsRequest) (*GetEntityDetailsResponse, error) {
 	query := `SELECT id, primary_email, primary_phone, is_verified, verification_token, verification_token_expires_at, public_identifier, active, created_at, deleted_at 
 			  FROM entities WHERE active = true AND id = $1;`
 
-	rows, err := dal.db.Query(context.Background(), query, req.Entity)
+	rows, err := dal.db.Query(ctx, query, req.Entity)
 	if err != nil {
 		return &GetEntityDetailsResponse{Valid: false, Error: err.Error()}, err
 	}

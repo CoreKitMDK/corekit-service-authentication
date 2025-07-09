@@ -1,6 +1,7 @@
-CREATE OR REPLACE FUNCTION current_epoch()
+CREATE OR REPLACE FUNCTION current_epoch_utc()
 RETURNS BIGINT AS $$
 BEGIN
-RETURN extract(epoch from now());
+SET TIME ZONE 'UTC';
+RETURN EXTRACT(EPOCH FROM NOW());
 END;
 $$ LANGUAGE plpgsql;
