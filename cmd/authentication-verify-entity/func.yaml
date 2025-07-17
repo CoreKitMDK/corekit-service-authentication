@@ -18,4 +18,3 @@ run:
 deploy:
   namespace: testing-dev
   image: registry.final.tools/cluster/config:latest
-
