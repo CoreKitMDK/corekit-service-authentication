@@ -34,14 +34,14 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 
 	caller := r.Header.Get("Caller")
 
-	var req authentication.LoginPasswordRequest
+	var req authentication.DeleteEntityRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		Core.Logger.Log(logger.ERROR, "failed to decode request body for caller: "+caller+", error: "+err.Error())
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	resp, err := dal.LoginPassword(context.Background(), &req)
+	resp, err := dal.DeleteEntity(context.Background(), &req)
 	if err != nil {
 		Core.Logger.Log(logger.ERROR, "failed to get rights for caller: "+caller+", error: "+err.Error())
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -69,5 +69,5 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	Core.Logger.Log(logger.DEBUG, "Successfully LoginPassword for entity: "+req.Identifier+" for caller: "+caller)
+	Core.Logger.Log(logger.DEBUG, "Successfully DeleteEntity for entity: "+req.Entity.String()+" for caller: "+caller)
 }

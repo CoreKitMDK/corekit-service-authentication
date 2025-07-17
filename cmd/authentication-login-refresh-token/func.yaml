@@ -1,0 +1,20 @@
+specVersion: 0.36.0
+name: authentication-login-refresh-token
+runtime: go
+registry: registry.final.tools/cluster
+namespace: testing-dev
+created: 2025-04-23T20:03:24.996757+02:00
+build:
+  builder: pack
+run:
+  envs:
+  - name: FUNC_DESC
+    value: 
+      H4sIAJBYM2gC/51V227jNhD9FVZ52A0QS2vXcS5v22yyDZpmg0WCReEYMkWNbNYSqSUpeQ3b/94Z6hK7LfpQ6MHkmTMXHs7Q20DxAoLrYK3XwVlQmRzXkQPrBqXRf4JwUT2MGiMxbckF0Ykh1WKQQo0WqRwYxdE347mFs4BXbhm7TUnUp5dfHu5v4scvj7dITcEKI0sntULbN71mzxiKZZUSHkOGFlUByvGWc8I+a/br8/MTu2tJr/h9g1zoApjTbKMrwxSsiddRfmLPS2CJljmYMucO+gxM6BSY4IolCOpKpUxivOl8yVWaQ7jQ89n7fn0aYiBp+7jMoARapZYS+6IMfK/wBDakqk5O2CeoIdclnYCQduvry4C7CgOwZMN4mqJ+jDNSkoJ1BcQEHFbRAadYrXlVwMWyi3TGkIEHUpk0BZOOrbVZWbaWbsnmC+1jz31hL2VKIjgUxVRK+dR4YXrBdObRXp7KkpGgOWFzdvNwz7RhIpf+SLlMDDebJjWmbJWUqtYrSFlmdNHcSGL02oIhXw9SSLyygvxyqeCa6prP51i+1Tm8KoHdx5bOlddRVGy6gkL4wYsSLwN9I+9AfncYtdCkgAVg0zY20vCQRw00e/+OQlqMuUBZqsTHWSk01hBRksgZgKjgUkXoad+dvvoGO0Ex1/0P9qWT2P4Oa8GeHF6ML4dX5+OLD2gwUGgH8dEgLbld4mZ0Mf55dH4+SXg6TriYDEUGiRBiMk6TbHSVTeB8NJykl+jhb3ERXG+DfhZwfRT0XwYQ0XZOW6wb2/81al9vP376/TYsUrTxUsY1GNtY6qGnk0q4yyT2Tui0zi3Ctkp6C3pRSRzHvzSQyR+IHT0QgX8hEMIuUoI0ap4QUHVcc2MRuPnyeHf/Of74dB+/fH3YHWx/u/2jVypewYbY9NTsVrV12A3Bf7083fShAft+geLtCnBGCtuImFZelrgvjDBKl1cWq4/7M9pahC0Y5lrgqd4OGEvfHh9C/0WXu+HVKBxOLsMh7kbjXkQc6sK/S8je9gLuw22THRct0ql5wI+2B/rucdfcOK4O7gx31C4xUSnIUlsXL4GneJLD3ETCbH1r4VocnnfvG6nM9SZuh5fuEFuINeibOcv5gsQdDJqB2A0GSSVzTMgw8GpH+EJaZzZs261iHPl9Rwz2+3/mmvpkfZZg9vd80z4hkvqUXjax8lCXzI9qswwPOjhq7/LN3a/ehu3s6N9udthJ066VkNQ102z/F/aPYSJVBwAA
+  - name: KV_STORE_URL
+    value: final.tools/v1/config
+  - name: KV_STORE_PASSWORD
+    value: '1234'
+deploy:
+  namespace: testing-dev
+  image: registry.final.tools/cluster/config:latest
