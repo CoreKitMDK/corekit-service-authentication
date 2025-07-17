@@ -7,19 +7,36 @@ import (
 	"time"
 )
 
-type DAL struct {
+type IDAL interface {
+	Close()
+	LoginPassword(ctx context.Context, req *LoginPasswordRequest) (*LoginPasswordResponse, error)
+	LoginRefreshToken(ctx context.Context, req *LoginRefreshTokenRequest) (*LoginRefreshTokenResponse, error)
+	RegisterPassword(ctx context.Context, req *RegisterPasswordRequest) (*RegisterPasswordResponse, error)
+	RefreshToken(ctx context.Context, req *RefreshTokenRequest) (*RefreshTokenResponse, error)
+	LogoutToken(ctx context.Context, req *LogoutTokenRequest) (*LogoutTokenResponse, error)
+	LogoutRefreshToken(ctx context.Context, req *LogoutRefreshTokenRequest) (*LogoutRefreshTokenResponse, error)
+	LogoutAll(ctx context.Context, req *LogoutAllRequest) (*LogoutAllResponse, error)
+	GetVerificationCode(ctx context.Context, req *GetVerificationCodeRequest) (*GetVerificationCodeResponse, error)
+	VerifyEntity(ctx context.Context, req *VerifyEntityRequest) (*VerifyEntityResponse, error)
+	ForgotPassword(ctx context.Context, req *ForgotPasswordRequest) (*ForgotPasswordResponse, error)
+	ChangePassword(ctx context.Context, req *ChangePasswordRequest) (*ChangePasswordResponse, error)
+	DeleteEntity(ctx context.Context, req *DeleteEntityRequest) (*DeleteEntityResponse, error)
+	GetEntityDetails(ctx context.Context, req *GetEntityDetailsRequest) (*GetEntityDetailsResponse, error)
+}
+
+type DALPostgres struct {
 	db              *pgx.Conn
 	tokenIssuer     string
 	tokenAudience   []string
 	tokenSigningKey string
 }
 
-func NewAuthenticationDAL(connString string, tokenIssuer string, tokenAudience []string, tokenSigningKey string) (*DAL, error) {
+func NewAuthenticationDALPostgres(connString string, tokenIssuer string, tokenAudience []string, tokenSigningKey string) (*DALPostgres, error) {
 	conn, err := pgx.Connect(context.Background(), connString)
 	if err != nil {
 		return nil, err
 	}
-	return &DAL{
+	return &DALPostgres{
 		db:              conn,
 		tokenIssuer:     tokenIssuer,
 		tokenAudience:   tokenAudience,
@@ -27,30 +44,30 @@ func NewAuthenticationDAL(connString string, tokenIssuer string, tokenAudience [
 	}, nil
 }
 
-func (dal *DAL) Close() {
+func (dal *DALPostgres) Close() {
 	err := dal.db.Close(context.Background())
 	if err != nil {
 		return
 	}
 }
 
-func (dal *DAL) LoginPassword(ctx context.Context, req *LoginPasswordRequest) (*LoginPasswordResponse, error) {
-	query1 := `SELECT e.id FROM entity e JOIN entity_login_method_password elmp WHERE elmp.identifier = $1 AND elmp.password_hash = $2 AND e.active = true AND elmp.active = true;`
+func (dal *DALPostgres) LoginPassword(ctx context.Context, req *LoginPasswordRequest) (*LoginPasswordResponse, error) {
+	query1 := `SELECT e.id, elmp.password_hash FROM entities e 
+    			JOIN entity_login_methods elm ON e.id = elm.entity_id
+    			JOIN entity_login_method_password elmp  ON elm.method_id = elmp.id
+    			WHERE elm.method_type = 'entity_login_method_password' AND elmp.identifier = $1 
+                AND e.active = true AND elmp.active = true;`
 
-	passwordHash, err := HashString(req.Password)
-	if err != nil {
-		return &LoginPasswordResponse{Valid: false, Error: err.Error()}, err
-	}
-
-	rows, err := dal.db.Query(ctx, query1, req.Identifier, passwordHash)
+	rows, err := dal.db.Query(ctx, query1, req.Identifier)
 	if err != nil {
 		return &LoginPasswordResponse{Valid: false, Error: err.Error()}, err
 	}
 	defer rows.Close()
 
+	passwordHash := ""
 	entityIDString := ""
 	for rows.Next() {
-		err := rows.Scan(&entityIDString)
+		err := rows.Scan(&entityIDString, &passwordHash)
 		if err != nil {
 			return &LoginPasswordResponse{Valid: false, Error: err.Error()}, err
 		}
@@ -59,6 +76,11 @@ func (dal *DAL) LoginPassword(ctx context.Context, req *LoginPasswordRequest) (*
 	entityID, err := uuid.Parse(entityIDString)
 	if err != nil {
 		return &LoginPasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	isPasswordCorrect := IsHashSameAsUnhashedString(passwordHash, req.Password)
+	if !isPasswordCorrect {
+		return &LoginPasswordResponse{Valid: false, Error: "Incorrect password"}, nil
 	}
 
 	tx, err := dal.db.Begin(ctx)
@@ -79,7 +101,7 @@ func (dal *DAL) LoginPassword(ctx context.Context, req *LoginPasswordRequest) (*
 	}
 
 	entityRefreshTokenIdString := ""
-	query2 := `INSERT INTO entity_refresh_tokens (entity_id, token, token_random_id, expires_at) VALUES ($1, $2, $3, $4);`
+	query2 := `INSERT INTO entity_refresh_tokens (entity_id, token, token_random_id, expires_at) VALUES ($1, $2, $3, $4)  RETURNING id;`
 	err = tx.QueryRow(ctx, query2, entityID, refreshToken, randomRefreshTokenId, refreshTokenExpiresAt.Unix()).Scan(&entityRefreshTokenIdString)
 	if err != nil {
 		return &LoginPasswordResponse{Valid: false, Error: err.Error()}, err
@@ -114,9 +136,20 @@ func (dal *DAL) LoginPassword(ctx context.Context, req *LoginPasswordRequest) (*
 	}, nil
 }
 
-func (dal *DAL) LoginRefreshToken(ctx context.Context, req *LoginRefreshTokenRequest) (*LoginRefreshTokenResponse, error) {
-	query1 := `SELECT id, token, token_random_id FROM entity_refresh_tokens WHERE entity_id = $1 AND refresh_token = $2 AND active = true AND expires_at > current_epoch();`
-	rows, err := dal.db.Query(ctx, query1, req.Entity)
+func (dal *DALPostgres) LoginRefreshToken(ctx context.Context, req *LoginRefreshTokenRequest) (*LoginRefreshTokenResponse, error) {
+
+	parsedRefreshToken, err := VerifyJWT(req.RefreshToken, dal.tokenSigningKey)
+	if err != nil {
+		return &LoginRefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	err = ValidateJWT(parsedRefreshToken)
+	if err != nil {
+		return &LoginRefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	query1 := `SELECT id, token, token_random_id FROM entity_refresh_tokens WHERE entity_id = $1 AND token = $2 AND active = true AND expires_at > current_epoch();`
+	rows, err := dal.db.Query(ctx, query1, req.Entity, req.RefreshToken)
 	if err != nil {
 		return &LoginRefreshTokenResponse{Valid: false, Error: err.Error()}, err
 	}
@@ -170,8 +203,8 @@ func (dal *DAL) LoginRefreshToken(ctx context.Context, req *LoginRefreshTokenReq
 	}, nil
 }
 
-func (dal *DAL) RegisterPassword(ctx context.Context, req *RegisterPasswordRequest) (*RegisterPasswordResponse, error) {
-	query1 := `SELECT id FROM entities WHERE primary_email <> $1;`
+func (dal *DALPostgres) RegisterPassword(ctx context.Context, req *RegisterPasswordRequest) (*RegisterPasswordResponse, error) {
+	query1 := `SELECT id FROM entities WHERE primary_email = $1;`
 
 	rows, err := dal.db.Query(ctx, query1, req.PrimaryEmail)
 	if err != nil {
@@ -279,10 +312,21 @@ func (dal *DAL) RegisterPassword(ctx context.Context, req *RegisterPasswordReque
 	}, nil
 }
 
-func (dal *DAL) RefreshToken(ctx context.Context, req *RefreshTokenRequest) (*RefreshTokenResponse, error) {
-	query1 := `SELECT id, token, token_random_id FROM entity_refresh_tokens WHERE entity_id = $1 AND refresh_token = $2 AND active = true AND expires_at > current_epoch();`
+func (dal *DALPostgres) RefreshToken(ctx context.Context, req *RefreshTokenRequest) (*RefreshTokenResponse, error) {
 
-	rows, err := dal.db.Query(ctx, query1, req.Entity)
+	parsedRefreshTokenCheck, err := VerifyJWT(req.RefreshToken, dal.tokenSigningKey)
+	if err != nil {
+		return &RefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	err = ValidateJWT(parsedRefreshTokenCheck)
+	if err != nil {
+		return &RefreshTokenResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	query1 := `SELECT id, token, token_random_id FROM entity_refresh_tokens WHERE entity_id = $1 AND token = $2 AND active = true AND expires_at > current_epoch();`
+
+	rows, err := dal.db.Query(ctx, query1, req.Entity, req.RefreshToken)
 	if err != nil {
 		return &RefreshTokenResponse{Valid: false, Error: err.Error()}, err
 	}
@@ -344,15 +388,15 @@ func (dal *DAL) RefreshToken(ctx context.Context, req *RefreshTokenRequest) (*Re
 		Entity:         req.Entity,
 		Token:          token,
 		TokenExpiresAt: expiresAt.Unix(),
-		Valid:          false,
+		Valid:          true,
 		Error:          "",
 	}, nil
 }
 
-func (dal *DAL) LogoutToken(ctx context.Context, req *LogoutTokenRequest) (*LogoutTokenResponse, error) {
-	query1 := `SELECT id FROM entity_tokens WHERE entity_id = $1 AND refresh_token = $2 AND active = true;`
+func (dal *DALPostgres) LogoutToken(ctx context.Context, req *LogoutTokenRequest) (*LogoutTokenResponse, error) {
+	query1 := `SELECT id FROM entity_tokens WHERE entity_id = $1 AND token = $2 AND active = true;`
 
-	rows, err := dal.db.Query(ctx, query1, req.Entity)
+	rows, err := dal.db.Query(ctx, query1, req.Entity, req.Token)
 	if err != nil {
 		return &LogoutTokenResponse{Valid: false, Error: err.Error()}, err
 	}
@@ -395,10 +439,10 @@ func (dal *DAL) LogoutToken(ctx context.Context, req *LogoutTokenRequest) (*Logo
 	return logoutTokenResponse, nil
 }
 
-func (dal *DAL) LogoutRefreshToken(ctx context.Context, req *LogoutRefreshTokenRequest) (*LogoutRefreshTokenResponse, error) {
-	query1 := `SELECT id FROM entity_refresh_tokens WHERE entity_id = $1 AND refresh_token = $2 AND active = true;`
+func (dal *DALPostgres) LogoutRefreshToken(ctx context.Context, req *LogoutRefreshTokenRequest) (*LogoutRefreshTokenResponse, error) {
+	query1 := `SELECT id FROM entity_refresh_tokens WHERE entity_id = $1 AND token = $2 AND active = true;`
 
-	rows, err := dal.db.Query(ctx, query1, req.Entity)
+	rows, err := dal.db.Query(ctx, query1, req.Entity, req.RefreshToken)
 	if err != nil {
 		return &LogoutRefreshTokenResponse{Valid: false, Error: err.Error()}, err
 	}
@@ -441,7 +485,7 @@ func (dal *DAL) LogoutRefreshToken(ctx context.Context, req *LogoutRefreshTokenR
 	return logoutRefreshTokenResponse, nil
 }
 
-func (dal *DAL) LogoutAll(ctx context.Context, req *LogoutAllRequest) (*LogoutAllResponse, error) {
+func (dal *DALPostgres) LogoutAll(ctx context.Context, req *LogoutAllRequest) (*LogoutAllResponse, error) {
 
 	tx, err := dal.db.Begin(ctx)
 	if err != nil {
@@ -472,7 +516,7 @@ func (dal *DAL) LogoutAll(ctx context.Context, req *LogoutAllRequest) (*LogoutAl
 	}, nil
 }
 
-func (dal *DAL) GetVerificationCode(ctx context.Context, req *GetVerificationCodeRequest) (*GetVerificationCodeResponse, error) {
+func (dal *DALPostgres) GetVerificationCode(ctx context.Context, req *GetVerificationCodeRequest) (*GetVerificationCodeResponse, error) {
 
 	tx, err := dal.db.Begin(ctx)
 	if err != nil {
@@ -485,7 +529,7 @@ func (dal *DAL) GetVerificationCode(ctx context.Context, req *GetVerificationCod
 		return &GetVerificationCodeResponse{Valid: false, Error: err.Error()}, err
 	}
 
-	query1 := `UPDATE entity SET verification_token = $1, verification_token_expires_at = current_epoch() + $2 WHERE entity_id = $3;`
+	query1 := `UPDATE entities SET verification_token = $1, verification_token_expires_at = current_epoch() + $2 WHERE id = $3;`
 	_, err = tx.Exec(ctx, query1, verificationToken, 15*60, req.Entity)
 	if err != nil {
 		return &GetVerificationCodeResponse{Valid: false, Error: err.Error()}, err
@@ -503,9 +547,9 @@ func (dal *DAL) GetVerificationCode(ctx context.Context, req *GetVerificationCod
 	}, nil
 }
 
-func (dal *DAL) VerifyEntity(ctx context.Context, req *VerifyEntityRequest) (*VerifyEntityResponse, error) {
+func (dal *DALPostgres) VerifyEntity(ctx context.Context, req *VerifyEntityRequest) (*VerifyEntityResponse, error) {
 
-	query1 := `SELECT id FROM entity WHERE id = $1 AND active = true AND verification_token = $2 AND verification_token_expires_at > current_epoch();`
+	query1 := `SELECT id FROM entities WHERE id = $1 AND active = true AND verification_token = $2 AND verification_token_expires_at > current_epoch();`
 
 	rows, err := dal.db.Query(ctx, query1, req.Entity, req.Code)
 	if err != nil {
@@ -531,7 +575,7 @@ func (dal *DAL) VerifyEntity(ctx context.Context, req *VerifyEntityRequest) (*Ve
 	}
 	defer tx.Rollback(ctx)
 
-	query2 := `UPDATE entity SET is_verified = true WHERE entity_id = $1;`
+	query2 := `UPDATE entities SET is_verified = true WHERE id = $1;`
 	_, err = tx.Exec(ctx, query2, entityID)
 	if err != nil {
 		return &VerifyEntityResponse{Valid: false, Error: err.Error()}, err
@@ -548,8 +592,8 @@ func (dal *DAL) VerifyEntity(ctx context.Context, req *VerifyEntityRequest) (*Ve
 	}, nil
 }
 
-func (dal *DAL) ForgotPassword(ctx context.Context, req *ForgotPasswordRequest) (*ForgotPasswordResponse, error) {
-	query1 := `SELECT id FROM entity WHERE primary_email = $1;`
+func (dal *DALPostgres) ForgotPassword(ctx context.Context, req *ForgotPasswordRequest) (*ForgotPasswordResponse, error) {
+	query1 := `SELECT id FROM entities WHERE primary_email = $1;`
 
 	rows, err := dal.db.Query(ctx, query1, req.PrimaryEmail)
 	if err != nil {
@@ -580,7 +624,11 @@ func (dal *DAL) ForgotPassword(ctx context.Context, req *ForgotPasswordRequest) 
 		return &ForgotPasswordResponse{Valid: false, Error: err.Error()}, err
 	}
 
-	query2 := `UPDATE entity_login_method_password SET password_reset_token = $1, password_reset_token_expires_at = current_epoch() + $2 WHERE entity_id = $3;`
+	query2 := `UPDATE entity_login_method_password SET password_reset_token = $1, password_reset_token_expires_at = current_epoch() + $2 
+					WHERE id = (
+					    SELECT elmp.id FROM entity_login_methods elm JOIN entity_login_method_password elmp ON elm.method_id = elmp.id 
+						WHERE elm.active = true and elm.method_type = 'entity_login_method_password' and elm.entity_id = $3 LIMIT 1
+					);`
 	_, err = tx.Exec(ctx, query2, passwordResetToken, 15*60, entityID)
 	if err != nil {
 		return &ForgotPasswordResponse{Valid: false, Error: err.Error()}, err
@@ -598,12 +646,12 @@ func (dal *DAL) ForgotPassword(ctx context.Context, req *ForgotPasswordRequest) 
 	}, nil
 }
 
-func (dal *DAL) ChangePassword(ctx context.Context, req *ChangePasswordRequest) (*ChangePasswordResponse, error) {
+func (dal *DALPostgres) ChangePassword(ctx context.Context, req *ChangePasswordRequest) (*ChangePasswordResponse, error) {
 	query1 := `SELECT e.id, elmp.id 
 		FROM entities e JOIN entity_login_methods elm ON e.id = elm.entity_id 
-		JOIN entity_login_methods_password elmp ON elm.method_id = elmp.id
+		JOIN entity_login_method_password elmp ON elm.method_id = elmp.id
 	    WHERE e.active = true AND elm.active = true AND elmp.active = true and elm.method_type like 'entity_login_method_password'
-			AND e.primary_email = $1 elmp.password_reset_token = $2 AND elmp.password_reset_token_expires_at > current_epoch();`
+			AND e.primary_email = $1 AND elmp.password_reset_token = $2 AND elmp.password_reset_token_expires_at > current_epoch();`
 
 	rows, err := dal.db.Query(ctx, query1, req.PrimaryEmail, req.PasswordResetToken)
 	if err != nil {
@@ -611,15 +659,24 @@ func (dal *DAL) ChangePassword(ctx context.Context, req *ChangePasswordRequest) 
 	}
 	defer rows.Close()
 
-	var entityID uuid.UUID
-	var entityLoginPasswordID uuid.UUID
+	var entityIDString string
+	var entityLoginPasswordIDString string
 
 	for rows.Next() {
-		var entity Entity
-		err := rows.Scan(&entity.ID, &entityLoginPasswordID)
+		err := rows.Scan(&entityIDString, &entityLoginPasswordIDString)
 		if err != nil {
 			return &ChangePasswordResponse{Valid: false, Error: err.Error()}, err
 		}
+	}
+
+	entityID, err := uuid.Parse(entityIDString)
+	if err != nil {
+		return &ChangePasswordResponse{Valid: false, Error: err.Error()}, err
+	}
+
+	entityLoginPasswordID, err := uuid.Parse(entityLoginPasswordIDString)
+	if err != nil {
+		return &ChangePasswordResponse{Valid: false, Error: err.Error()}, err
 	}
 
 	if entityID == uuid.Nil {
@@ -637,7 +694,8 @@ func (dal *DAL) ChangePassword(ctx context.Context, req *ChangePasswordRequest) 
 		return &ChangePasswordResponse{Valid: false, Error: err.Error()}, err
 	}
 
-	query2 := `UPDATE entity_login_methods SET password_hash = $1, password_reset_token = NULL, password_reset_token_expires_at = 0 WHERE id = $2;`
+	query2 := `UPDATE entity_login_method_password SET password_hash = $1, password_reset_token = NULL, password_reset_token_expires_at = 0 WHERE id = $2;`
+
 	_, err = tx.Exec(ctx, query2, hashedPassword, entityLoginPasswordID)
 	if err != nil {
 		return &ChangePasswordResponse{Valid: false, Error: err.Error()}, err
@@ -666,7 +724,7 @@ func (dal *DAL) ChangePassword(ctx context.Context, req *ChangePasswordRequest) 
 	}, nil
 }
 
-func (dal *DAL) DeleteEntity(ctx context.Context, req DeleteEntityRequest) (*DeleteEntityResponse, error) {
+func (dal *DALPostgres) DeleteEntity(ctx context.Context, req *DeleteEntityRequest) (*DeleteEntityResponse, error) {
 	tx, err := dal.db.Begin(ctx)
 	if err != nil {
 		return &DeleteEntityResponse{Valid: false, Error: err.Error()}, err
@@ -692,7 +750,7 @@ func (dal *DAL) DeleteEntity(ctx context.Context, req DeleteEntityRequest) (*Del
 	return &DeleteEntityResponse{Valid: true, Error: ""}, nil
 }
 
-func (dal *DAL) GetEntityDetails(ctx context.Context, req *GetEntityDetailsRequest) (*GetEntityDetailsResponse, error) {
+func (dal *DALPostgres) GetEntityDetails(ctx context.Context, req *GetEntityDetailsRequest) (*GetEntityDetailsResponse, error) {
 	query := `SELECT id, primary_email, primary_phone, is_verified, verification_token, verification_token_expires_at, public_identifier, active, created_at, deleted_at 
 			  FROM entities WHERE active = true AND id = $1;`
 

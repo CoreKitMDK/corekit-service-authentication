@@ -3,6 +3,7 @@ package function
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/CoreKitMDK/corekit-service-authentication/v2/pkg/authentication"
 	"github.com/CoreKitMDK/corekit-service-authorization/v2/pkg/authorization"
 	"net/http"
 
@@ -12,7 +13,7 @@ import (
 
 var (
 	Core, _ = core.NewCore()
-	dal     *authorization.AuthorizationDAL
+	dal     *authentication.IDAL
 )
 
 func Handle(w http.ResponseWriter, r *http.Request) {

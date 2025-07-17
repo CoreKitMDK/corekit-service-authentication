@@ -1,5 +1,5 @@
 specVersion: 0.36.0
-name: entity-login
+name: authentication-login-password
 runtime: go
 registry: registry.final.tools/cluster
 namespace: testing-dev

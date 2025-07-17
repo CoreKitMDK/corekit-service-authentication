@@ -21,6 +21,9 @@ type LoginRefreshTokenResponse struct {
 	Token          string `json:"token"`
 	TokenExpiresAt int64  `json:"token_expires_at"`
 
+	RefreshToken          string `json:"refresh_token"`            // TODO
+	RefreshTokenExpiresAt int64  `json:"refresh_token_expires_at"` //TODO
+
 	Valid bool   `json:"valid"`
 	Error string `json:"error"`
 }
